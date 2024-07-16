@@ -1,13 +1,645 @@
-Version: 1.0
+---
+  title: "project"
+output: html_document
+date: "2024-06-25"
+---
+  
+  ```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
 
-RestoreWorkspace: Default
-SaveWorkspace: Default
-AlwaysSaveHistory: Default
+## R Markdown
 
-EnableCodeIndexing: Yes
-UseSpacesForTab: Yes
-NumSpacesForTab: 2
-Encoding: UTF-8
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
 
-RnwWeave: Sweave
-LaTeX: pdfLaTeX
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+  
+  ```{r cars}
+
+# Load necessary libraries
+library(dplyr)
+library(lubridate)
+library(stringr)
+
+# Load the data
+data <- read.csv("C:/Users/yoniabergel31/Downloads/surveyResponsesAnon.csv")
+
+# Inspect the datetime columns to understand their formats
+head(data$started_datetime)
+head(data$completed_date_time)
+head(data$reviewed_at_datetime)
+
+# Assuming the datetime format is 'd/m/Y H:M' based on the inspection
+data$started_datetime <- dmy_hm(data$started_datetime)
+data$completed_date_time <- dmy_hm(data$completed_date_time)
+data$reviewed_at_datetime <- dmy_hm(data$reviewed_at_datetime)
+
+calculate_percentage_answered <- function(columns) {
+  apply(data[columns], 1, function(row) {
+    answered <- sum(!grepl("999", row) & row != "" & row != ".", na.rm = TRUE)
+    total <- length(columns)
+    percentage <- (answered / total) * 100
+    return(percentage)
+  })
+}
+
+data$percent_answered_frnd <- calculate_percentage_answered(grep("^e_frnd_", names(data), value = TRUE))
+data$percent_answered_other <- calculate_percentage_answered(grep("^e_other_", names(data), value = TRUE))
+data$percent_answered_fmly <- calculate_percentage_answered(grep("^e_fmly_", names(data), value = TRUE))
+data$percent_answered_work <- calculate_percentage_answered(grep("^e_work_", names(data), value = TRUE))
+
+# Replace '999' with an empty string in text response columns
+text_columns <- grep("^e_", names(data), value = TRUE)
+data[text_columns] <- lapply(data[text_columns], function(x) gsub("999", "", x))
+
+# Remove columns with a high percentage of missing values
+threshold <- 0.5
+cols_to_remove <- sapply(data, function(x) mean(is.na(x)) > threshold)
+data <- data[, !cols_to_remove]
+
+# Remove specified repetitive and less informative columns
+cols_to_remove_manual <- c("entered_code", "start_datetime", "start_diff", "sampling_frame", 
+                           "StartDate", "EndDate", "status", "Status" , "Progress", "Duration..in.seconds.", 
+                           "Finished", "RecordedDate", "ResponseId", "DistributionChannel", 
+                           "UserLanguage", "Fluent.languages", "comments", "age_prolific", "prolific_score")
+data <- data[, !(names(data) %in% cols_to_remove_manual)]
+
+# Ensure text columns are properly adjusted
+data[text_columns] <- lapply(data[text_columns], as.character)
+
+# Add columns for the average length of responses for each type of email
+email_types <- list(
+  work = grep("^e_work_", names(data), value = TRUE),
+  family = grep("^e_fmly_", names(data), value = TRUE),
+  friend = grep("^e_frnd_", names(data), value = TRUE), 
+  other = grep("^e_other_", names(data), value = TRUE)
+)
+
+for (type in names(email_types)) {
+  cols <- email_types[[type]]
+  if (length(cols) > 0) {  # Ensure there are columns to process
+    avg_length <- rowMeans(sapply(data[cols], function(x) nchar(x)), na.rm = TRUE)
+    avg_length[is.nan(avg_length)] <- NA  # Replace NaN with NA
+    data[[paste0("avg_length_", type)]] <- avg_length
+  } else {
+    data[[paste0("avg_length_", type)]] <- NA  # Assign NA if no columns found
+  }
+}
+data$gender_numeric <- ifelse(data$Sex == "Male", 1, ifelse(data$Sex == "Female", 0, 2))
+data <- data %>%
+  filter(!is.na(Nationality)) %>%
+  mutate(Nationality_numeric = as.integer(factor(Nationality)))
+# Load necessary libraries
+library(dplyr)
+library(tidyr)
+
+# Define a function to reshape the dataframe
+reshape_data <- function(df) {
+  # Define columns to keep constant
+  demographic_columns <- c('started_datetime', 'completed_date_time', 'time_taken', 'num_approvals',
+                           'num_rejections', 'reviewed_at_datetime', 'Country.of.Birth', 'Student.Status',
+                           'Employment.Status', 'Current.Country.of.Residence', 'First.Language', 'Ethnicity2', 
+                           'gender', 'age', 'nationality', 'race', 'edu', 'ses_us', 'pol_leaning', 
+                           'religion', 'yob', 'nationality_by_numeric', 'gender_numeric')
+  
+  # Define columns to split
+  message_columns <- list(
+    other = c('e_other_1', 'e_other_2', 'e_other_3', 'e_other_4', 'e_other_5'),
+    friend = c('e_frnd_1', 'e_frnd_2', 'e_frnd_3', 'e_frnd_4', 'e_frnd_5'),
+    family = c('e_fmly_1', 'e_fmly_2', 'e_fmly_3', 'e_fmly_4', 'e_fmly_5'),
+    worker = c('e_work_1', 'e_work_2', 'e_work_3', 'e_work_4', 'e_work_5')
+  )
+  
+  avg_length_columns <- c(
+    other = 'avg_length_other',
+    friend = 'avg_length_friend',
+    family = 'avg_length_family',
+    worker = 'avg_length_work'
+  )
+  
+  percent_answered_columns <- c(
+    other = 'percent_answered_other',
+    friend = 'percent_answered_frnd',
+    family = 'percent_answered_fmly',
+    worker = 'percent_answered_work'
+  )
+  
+  # Reshape the data
+  reshaped_data <- bind_rows(
+    lapply(names(message_columns), function(relation) {
+      df %>%
+        select(all_of(demographic_columns), all_of(message_columns[[relation]]), avg_length = !!avg_length_columns[[relation]], percent_answered = !!percent_answered_columns[[relation]]) %>%
+        mutate(relation_type = relation,
+               email1 = !!sym(message_columns[[relation]][1]),
+               email2 = !!sym(message_columns[[relation]][2]),
+               email3 = !!sym(message_columns[[relation]][3]),
+               email4 = !!sym(message_columns[[relation]][4]),
+               email5 = !!sym(message_columns[[relation]][5])) %>%
+        select(-all_of(message_columns[[relation]]))
+    })
+  )
+  
+  return(reshaped_data)
+}
+# Add gender_numeric column
+data <- data %>%
+  mutate(gender_numeric = case_when(
+    gender == "Female" ~ 1,
+    gender == "Male" ~ 2,
+    TRUE ~ 0
+  ))
+
+# Add nationality_by_numeric column (example conversion, modify as needed)
+unique_nationalities <- unique(data$nationality)
+nationality_mapping <- setNames(seq_along(unique_nationalities), unique_nationalities)
+data <- data %>%
+  mutate(nationality_by_numeric = nationality_mapping[nationality])
+# Reshape the data
+reshaped_data <- reshape_data(data)
+# Add relation_type_numeric column
+reshaped_data <- reshaped_data %>%
+  mutate(
+    relation_type_numeric = case_when(
+      relation_type == "other" ~ 1,
+      relation_type == "worker" ~ 2,
+      relation_type == "family" ~ 3,
+      relation_type == "friend" ~ 4,
+      TRUE ~ 0
+    ),
+    Student.Status_numeric = case_when(
+      `Student.Status` == "Yes" ~ 1,
+      `Student.Status` == "No" ~ 2,
+      `Student.Status` == "" ~0 ,
+      
+      TRUE ~ 0
+    ),
+    Employment.Status_numeric = case_when(
+      Employment.Status== "Unemployed (and job seeking)" ~ 10,
+      Employment.Status == "Part-Time" ~ 20,
+      Employment.Status == "Full-Time" ~ 30,
+      Employment.Status == "Not in paid work (e.g. homemaker, retired or disabled)" ~ 40,
+      Employment.Status== "" ~ 0,
+      TRUE ~ 0
+    )
+  )
+
+# Display the reshaped data
+head(reshaped_data)
+# Display the cleaned data summary
+summary(data)
+# Save cleaned data to a new CSV file
+write.csv(reshaped_data, "C:/Users/yoniabergel31/Downloads/updatedsurveyResponsesAnon.csv", row.names = FALSE)
+
+
+```
+
+```{r}
+required_columns <- c("avg_length", "gender_numeric", "nationality_by_numeric", "relation_type_numeric","age")
+
+# Check for and handle missing values if necessary
+reshaped_data <- na.omit(reshaped_data)
+
+# Build the regression model
+model <- lm(avg_length ~ gender_numeric + nationality_by_numeric + relation_type_numeric + age, data = reshaped_data)
+
+# Summarize the model
+summary(model)
+model_summary=summary(model)
+# r adjusted
+cat("Adjusted R-squared: ", model_summary$adj.r.squared, "\n")
+```
+```{r}
+
+
+# Filter the dataset for individuals whose nationality is 'United States'
+us_data <- reshaped_data %>%
+  filter(nationality == 'United States')
+
+# Add race_numeric column
+us_data <- us_data %>%
+  mutate(race_numeric = case_when(
+    race == "Other" ~ 1,
+    race == "Asian/Pacific Islanders" ~ 2,
+    race == "Black or African American (non-Hispanic)" ~ 3, 
+    race == "Caucasian/White (non-Hispanic)" ~ 4,
+    race == "Latino or Hispanic" ~ 5,
+    TRUE ~ 0
+  ))
+# Add pol_leaning_numeric column
+us_data <- us_data %>%
+  mutate(pol_leaning_numeric = case_when(
+    pol_leaning == "Liberal" ~ 1,
+    pol_leaning == "Conservative" ~ 2,
+    pol_leaning == "Neither liberal nor conservative" ~ 3,
+    pol_leaning == "Very conservative" ~ 4,
+    pol_leaning == "Very liberal" ~ 5,
+    TRUE ~ 0
+  ))
+
+# Handle 'ses_us' range by taking the middle of the range
+# Assuming 'ses_us' is in a format like "low-high" (e.g., "30-40")
+# Handle 'ses_us' range by taking the middle of the range
+us_data <- us_data %>%
+  mutate(ses_us_middle = case_when(
+    ses_us == "Less than $10,000" ~ 5000,
+    ses_us == "$150000 or more" ~ 175000,
+    TRUE ~ as.numeric(gsub("[^0-9-]", "", ses_us)) + as.numeric(sub(".*-", "", ses_us)) / 2
+  ))
+
+# Ensure necessary columns are present
+required_columns <- c("avg_length", "gender_numeric", "age", "relation_type_numeric", "race_numeric", "ses_us_middle", "pol_leaning_numeric")
+if (!all(required_columns %in% colnames(us_data))) {
+  stop("Some required columns are missing from the dataset.")
+}
+
+# Convert avg_length to numeric (if it's not already)
+us_data$avg_length <- as.numeric(as.character(us_data$avg_length))
+
+
+# Build the new regression model
+new_model <- lm(avg_length ~ age + gender_numeric + relation_type_numeric + race_numeric + ses_us_middle + pol_leaning_numeric, data = us_data)
+
+# Summarize the new model
+new_model_summary <- summary(new_model)
+
+# Print the adjusted R-squared value
+cat("Adjusted R-squared: ", new_model_summary$adj.r.squared, "\n")
+
+# Print the summary of the new model
+print(new_model_summary)
+```
+
+```{r}
+# Filter the dataset for individuals whose nationality is 'United States'
+us_data <- reshaped_data %>%
+  filter(nationality == 'United States')
+
+# Add race_numeric column
+us_data <- us_data %>%
+  mutate(race_numeric = case_when(
+    race == "Other" ~ 1,
+    race == "Asian/Pacific Islanders" ~ 2,
+    race == "Black or African American (non-Hispanic)" ~ 3,
+    race == "Caucasian/White (non-Hispanic)" ~ 4,
+    race == "Latino or Hispanic" ~ 5,
+    TRUE ~ 0
+  ))
+# Add pol_leaning_numeric column
+us_data <- us_data %>%
+  mutate(pol_leaning_numeric = case_when(
+    pol_leaning == "Liberal" ~ 1,
+    pol_leaning == "Conservative" ~ 2,
+    pol_leaning == "Neither liberal nor conservative" ~ 3,
+    pol_leaning == "Very conservative" ~ 4,
+    pol_leaning == "Very liberal" ~ 5,
+    TRUE ~ 0
+  ))
+
+# Handle 'ses_us' range by taking the middle of the range
+# Assuming 'ses_us' is in a format like "low-high" (e.g., "30-40")
+# Handle 'ses_us' range by taking the middle of the range
+us_data <- us_data %>%
+  mutate(ses_us_middle = case_when(
+    ses_us == "Less than $10,000" ~ 5000,
+    ses_us == "$150000 or more" ~ 175000,
+    ses_us == "$100,000–$149,999" ~ 125000,
+    ses_us == "$16,000–$19,999" ~18000,
+    ses_us == "$80,000–$89,999" ~ 85000,
+    ses_us == "$60,000–$69,999" ~ 65000,
+    ses_us == "$150000 or more" ~ 175000,
+    ses_us == "$30,000–$39,999" ~ 35000,
+    ses_us == "$40,000–$49,999" ~ 45000,
+    ses_us == "$50,000–$59,999" ~ 55000,
+    ses_us == "$70,000–$79,999" ~ 75000,
+    ses_us == "$20,000–$29,999" ~ 25000,
+    ses_us == "$10,000–$15,999" ~ 13000,
+    ses_us == "$90,000–$99,999" ~ 95000,
+    
+    TRUE ~ as.numeric(gsub("[^0-9-]", "", ses_us)) + as.numeric(sub(".*-", "", ses_us)) / 2
+  ))
+
+# Ensure necessary columns are present
+required_columns <- c("avg_length", "gender_numeric", "age", "relation_type_numeric", "race_numeric", "ses_us_middle", "pol_leaning_numeric")
+if (!all(required_columns %in% colnames(us_data))) {
+  stop("Some required columns are missing from the dataset.")
+}
+
+# Convert avg_length to numeric (if it's not already)
+us_data$avg_length <- as.numeric(as.character(us_data$avg_length))
+
+
+# Build the new regression model
+new_model <- lm(avg_length ~ age + gender_numeric + relation_type_numeric + race_numeric + ses_us_middle + pol_leaning_numeric, data = us_data)
+
+# Summarize the new model
+new_model_summary <- summary(new_model)
+
+# Print the adjusted R-squared value
+cat("Adjusted R-squared: ", new_model_summary$adj.r.squared, "\n")
+# Filter out "Other" from race
+us_data_filtered <- us_data %>%
+  filter(race != "Other" & gender != "Other / prefer not to say" & ses_us_middle != "")
+
+us_data_filtered <- us_data_filtered %>%
+  mutate(ses_us_category = case_when(
+    ses_us_middle < 10000 ~ "<10,000",
+    ses_us_middle >= 10000 & ses_us_middle < 25000 ~ "10,000-25,000",
+    ses_us_middle >= 25000 & ses_us_middle < 45000 ~ "25,000-45,000",
+    ses_us_middle >= 45000 & ses_us_middle < 80000 ~ "45,000-80,000",
+    ses_us_middle >= 80000 & ses_us_middle < 110000 ~ "80,000-110,000",
+    ses_us_middle >= 110000 ~ "110,000+"
+  ))
+
+# Explicitly convert ses_us_category to a factor with the correct levels
+us_data_filtered$ses_us_category <- factor(us_data_filtered$ses_us_category, levels = c("<10,000", "10,000-25,000", "25,000-45,000", "45,000-80,000", "80,000-110,000", "110,000+"))
+
+# Summarize data for bar plot
+us_data_summarized <- us_data_filtered %>%
+  group_by(ses_us_category, relation_type, race) %>%
+  summarize(avg_length_mean = mean(avg_length))
+# Bar plot
+# Bar plot
+ggplot(us_data_summarized, aes(x = ses_us_category, y = avg_length_mean, fill = race)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  facet_wrap(~ relation_type) +
+  labs(title = "Average Length by SES, Race, and Relation Type",
+       x = "SES (Category)",
+       y = "Average Length",
+       fill = "Race") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  ylim(0, 150)
+
+
+```
+
+
+```{r}
+#  First Logistic model 
+# Load necessary libraries
+library(dplyr)
+library(caret)
+
+# Load the dataset
+temp_data <- reshaped_data
+# Create the binary target variable based on the percentage of answered emails
+temp_data <- temp_data %>%
+  mutate(responded = ifelse(percent_answered > 75, 1, 0))
+
+# Select necessary columns and handle missing values by omitting rows with NA
+temp_data <- temp_data %>%
+  select(responded, age, gender_numeric, Student.Status, Employment.Status, religion, relation_type_numeric) %>%
+  na.omit()
+
+# Convert categorical variables to numeric codes
+temp_data <- temp_data %>%
+  mutate(
+    Student.Status = as.numeric(as.factor(Student.Status)),
+    Employment.Status = as.numeric(as.factor(Employment.Status)),
+    religion = as.numeric(as.factor(religion)),
+    relation_type_numeric = as.numeric(as.factor(relation_type_numeric))
+  )
+
+# Build the logistic regression model
+logistic_model <- glm(responded ~ age + gender_numeric + Student.Status + 
+                        Employment.Status + religion + relation_type_numeric, 
+                      data = temp_data, family = binomial)
+
+# Summarize the logistic model
+summary(logistic_model)
+
+# Evaluate the model
+predicted_probabilities <- predict(logistic_model, type = "response")
+predicted_classes <- ifelse(predicted_probabilities > 0.75, 1, 0)
+
+# Confusion matrix
+confusion_matrix <- table(Predicted = predicted_classes, Actual = temp_data$responded)
+print(confusion_matrix)
+
+# Calculate accuracy
+accuracy <- mean(predicted_classes == temp_data$responded)
+cat("Accuracy: ", accuracy, "\n")
+
+# Calculate additional evaluation metrics
+conf_matrix <- confusionMatrix(as.factor(predicted_classes), as.factor(temp_data$responded))
+print(conf_matrix)
+```
+
+```{r}
+#  Second Logistic model show with 50
+# Load necessary libraries
+library(dplyr)
+library(caret)
+
+# Load the dataset
+temp_data<-reshaped_data
+# Create the binary target variable based on the percentage of answered emails
+temp_data <- temp_data %>%
+  mutate(responded = ifelse(percent_answered > 50, 1, 0))
+
+# Select necessary columns and handle missing values by omitting rows with NA
+temp_data <- temp_data %>%
+  select(responded, age, relation_type_numeric,edu) %>%
+  na.omit()
+
+# Convert categorical variables to numeric codes
+temp_data <- temp_data %>%
+  mutate(
+    relation_type_numeric = as.numeric(as.factor(relation_type_numeric)),edu = as.numeric(as.factor(edu))
+  )
+
+# Build the logistic regression model
+logistic_model <- glm(responded ~ age + edu+
+                        relation_type_numeric,
+                      data = temp_data, family = binomial)
+
+# Summarize the logistic model
+summary(logistic_model)
+
+# Evaluate the model
+predicted_probabilities <- predict(logistic_model, type = "response")
+predicted_classes <- ifelse(predicted_probabilities > 0.5, 1, 0)
+
+# Confusion matrix
+confusion_matrix <- table(Predicted = predicted_classes, Actual = temp_data$responded)
+print(confusion_matrix)
+
+# Calculate accuracy
+accuracy <- mean(predicted_classes == temp_data$responded)
+cat("Accuracy: ", accuracy, "\n")
+
+# Calculate additional evaluation metrics
+conf_matrix <- confusionMatrix(as.factor(predicted_classes), as.factor(temp_data$responded))
+print(conf_matrix)
+```
+
+```{r}
+#  Second Logistic model show with 75
+# Load necessary libraries
+library(dplyr)
+library(caret)
+
+# Load the dataset
+temp_data<-reshaped_data
+# Create the binary target variable based on the percentage of answered emails
+temp_data <- temp_data %>%
+  mutate(responded = ifelse(percent_answered > 75, 1, 0))
+
+# Select necessary columns and handle missing values by omitting rows with NA
+temp_data <- temp_data %>%
+  select(responded, age, relation_type_numeric,edu) %>%
+  na.omit()
+
+# Convert categorical variables to numeric codes
+temp_data <- temp_data %>%
+  mutate(
+    relation_type_numeric = as.numeric(as.factor(relation_type_numeric)),edu = as.numeric(as.factor(edu))
+  )
+
+# Build the logistic regression model
+logistic_model <- glm(responded ~ age + edu+
+                        relation_type_numeric,
+                      data = temp_data, family = binomial)
+
+# Summarize the logistic model
+summary(logistic_model)
+
+# Evaluate the model
+predicted_probabilities <- predict(logistic_model, type = "response")
+predicted_classes <- ifelse(predicted_probabilities > 0.75, 1, 0)
+
+# Confusion matrix
+confusion_matrix <- table(Predicted = predicted_classes, Actual = temp_data$responded)
+print(confusion_matrix)
+
+# Calculate accuracy
+accuracy <- mean(predicted_classes == temp_data$responded)
+cat("Accuracy: ", accuracy, "\n")
+
+# Calculate additional evaluation metrics
+conf_matrix <- confusionMatrix(as.factor(predicted_classes), as.factor(temp_data$responded))
+print(conf_matrix)
+```
+
+
+
+```{r}
+# Load necessary libraries
+library(ggplot2)
+library(dplyr)
+
+# Filter data to exclude "prefer not to say/other" in gender
+filtered_data <- reshaped_data %>%
+  filter(gender_numeric %in% c(1, 2)) # Assuming 1 = Female, 2 = Male
+
+# Calculate the mean average length for each combination of gender and relation type
+summary_data <- filtered_data %>%
+  group_by(gender_numeric, relation_type_numeric) %>%
+  summarize(avg_length = mean(avg_length, na.rm = TRUE))
+
+# Create the bar plot with facets for relation type and gender
+ggplot(summary_data, aes(x = as.factor(relation_type_numeric), y = avg_length, fill = as.factor(gender_numeric))) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.9), width = 0.8) +
+  geom_text(aes(label = round(avg_length, 1)), 
+            position = position_dodge(width = 0.9), vjust = -0.5, size = 3) +
+  labs(title = "Average Length of Responses by Gender and Relation Type",
+       x = "Relation Type",
+       y = "Average Length of Responses",
+       fill = "Gender") +
+  theme_minimal() +
+  scale_fill_discrete(name = "Gender", labels = c("Female", "Male")) +
+  scale_x_discrete(labels = c("1" = "Other", "2" = "Worker", "3" = "Family", "4" = "Friend")) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+```{r}
+library(dplyr)
+library(caret)
+library(tidymodels)
+reshaped_data <- reshaped_data %>%
+  mutate(edu_numeric = case_when(
+    edu == "Postgraduate degree (MA, MBA, MD, JD, PhD, etc.)" ~ 1,
+    edu == "Undergraduate/college degree" ~ 2,
+    edu == "High school graduate" ~ 3,
+    edu == "Did not graduate from high school" ~ 4,
+    TRUE ~ 0
+  ))
+# Select predictors and target
+predictors <- c("age", "relation_type_numeric","edu_numeric")
+target <- "percent_answered"
+
+# Splitting the data
+set.seed(42)
+trainIndex <- createDataPartition(reshaped_data[[target]], p = 0.8, list = FALSE)
+train_data <- reshaped_data[trainIndex, ]
+test_data <- reshaped_data[-trainIndex, ]
+
+# Train the linear regression model
+model <- lm(percent_answered ~ age + relation_type_numeric + edu_numeric, data = train_data)
+
+# Predicting the test set
+predictions <- predict(model, test_data)
+
+# Calculating the Mean Squared Error
+mse <- mean((test_data[[target]] - predictions)^2)
+
+print(paste("Mean Squared Error:", mse))
+
+# Display model summary
+summary(model)
+```
+```{r}
+# Load necessary libraries
+library(dplyr)
+
+# Ensure the dataset has the required columns
+required_columns <- c("percent_answered", "relation_type_numeric", "age", "nationality_by_numeric")
+if (!all(required_columns %in% colnames(reshaped_data))) {
+  stop("Some required columns are missing from the dataset.")
+}
+reshaped_data$student_employment <- reshaped_data$Student.Status_numeric * reshaped_data$Employment.Status_numeric
+
+# Check for and handle missing values if necessary
+reshaped_data <- na.omit(reshaped_data)
+
+# Build the updated linear regression model
+linear_model <- lm(percent_answered ~ relation_type_numeric + age + nationality_by_numeric
+                   ,   data = reshaped_data)
+
+
+tidy_model <- tidy(linear_model)
+summary(linear_model)
+```
+
+```{r}
+# Create coefficient plot
+library(ggplot2)
+
+# Filter the data for the specified nations
+filtered_data <- reshaped_data %>%
+  filter(nationality %in% c("United States", "United Kingdom", "Philippines", "India")) 
+# Create the scatter plo
+# Create the scatter plot with regression lines
+ggplot(filtered_data, aes(x = age, y = percent_answered, color = relation_type)) +
+  geom_point(alpha = 0.7) +
+  geom_smooth(method = "lm", se = FALSE) +
+  facet_wrap(~ nationality) +
+  labs(title = "Regression Lines of Percent Answered by Age, Nationality, and Relation Type",
+       x = "Age",
+       y = "Percent Answered",
+       color = "Relation Type") +
+  theme_minimal()
+
+
+# Summarize the model
+summary(linear_model)
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+  
+  ```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
