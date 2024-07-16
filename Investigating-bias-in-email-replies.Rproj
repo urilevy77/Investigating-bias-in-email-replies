@@ -22,7 +22,9 @@ library(lubridate)
 library(stringr)
 
 # Load the data
-data <- read.csv("C:/Users/yoniabergel31/Downloads/surveyResponsesAnon.csv")
+# Enter your path
+data <- read.csv("Path/surveyResponsesAnon.csv")
+
 
 # Inspect the datetime columns to understand their formats
 head(data$started_datetime)
